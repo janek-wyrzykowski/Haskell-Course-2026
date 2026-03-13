@@ -49,17 +49,14 @@ matMul a b = [[sum [a !! i !! k * b !! k !! j |
 
 
 -- 5. Permutations
--- Unfortunately it is not a perfect solution because it requires comparable list elements (and it doesn't work with non-unique elements)
-permutations :: Eq a => Int -> [a] -> [[a]]
+permutations :: Int -> [a] -> [[a]]
 permutations k xs
   | k == 0 = [[]]
-  | otherwise = concat [fmap (y :)  (permutations (k - 1) (filter (/= y) xs)) |
-    y <- xs]
+  | otherwise = concat [fmap ((xs !! i) :) (permutations (k - 1) (take i xs ++ drop (i+1) xs)) |
+    i <- [0..length xs - 1]]
 
 
 -- 6. Hamming Numbers
--- TODO maybe return to this
--- For some reason it cannot calculate
 merge :: Ord a => [a] -> [a] -> [a]
 merge xs [] = xs
 merge [] ys = ys
@@ -69,16 +66,60 @@ merge (x:xs) (y:ys)
   | otherwise = y : merge (x:xs) ys
 
 hamming :: [Integer]
-hamming = merge (merge hamming (fmap (2*) hamming)) (merge (fmap (3*) hamming) (fmap (5*) hamming))
+hamming = 1 : merge (fmap (2*) hamming) (merge (fmap (3*) hamming) (fmap (5*) hamming))
 
 
 -- 7. Integer Power with Bang Patterns
+power :: Int -> Int -> Int
+power a b = go a b 1
+  where
+    go _ 0 r = r
+    go p q !r = go p (q-1) r*p
 
 
 -- 8. Running Maximum
+listMaxSeq :: [Int] -> Int
+listMaxSeq (x:xs) = go xs x 
+  where
+    go [] n = n
+    go (y:ys) n = let acc = max y n in seq acc (go ys acc)
+
+listMaxBang :: [Int] -> Int
+listMaxBang (x:xs) = go xs x 
+  where
+    go [] n = n
+    go (y:ys) !n = go ys (max y n) 
 
 
 -- 9. Infinite Prime Stream
+primes :: [Int]
+primes = sieve [2..]
 
+isPrimeUnbound :: Int -> Bool
+isPrimeUnbound n = go n 0
+  where
+    go a i
+      | a > primes !! i = go a (i+1)
+      | a == primes !! i = True
+      | otherwise = False
 
 -- 10. Strict Accumulation and Space Leaks
+meanA :: [Double] -> Double
+meanA xs = uncurry (/) (helper xs (0, 0))
+  where
+    helper [] (a, b) = (a, b)
+    helper (x:xs) (a, b) = helper xs (a+x, b+1)
+
+-- Note: Bang patterns reduce to WHNF. A pair in itself is in WHNF, so `!(a, b)` does not force evaluation of `a` nor `b`; to achieve this goal, `(!a, !b)` is required.
+meanB :: [Double] -> Double
+meanB xs = uncurry (/) (helper xs (0, 0))
+  where
+    helper [] (a, b) = (a, b)
+    helper (x:xs) (!a, !b) = helper xs (a+x, b+1)
+
+meanVarC :: [Double] -> (Double, Double)
+meanVarC xs = let (a, b, c) = helper xs (0, 0, 0)
+  in (a/c, b/c - (a*a)/(c*c))
+  where
+    helper [] (a, b, c) = (a, b, c)
+    helper (x:xs) (!a, !b, !c) = helper xs (a+x, b+x*x, c+1)
