@@ -56,7 +56,6 @@ lookupBST k (Node (k', v') left right)
 
 data RoseTree a = RoseNode a [RoseTree a]
 
-
 -- a. **Show instance for RoseTree**
 
 --    Write a `Show` instance for `RoseTree a` (assuming `Show a`) that displays a rose tree in a readable nested form. For example, the tree above might display as:
@@ -68,14 +67,12 @@ data RoseTree a = RoseNode a [RoseTree a]
 instance Show a => Show (RoseTree a) where
   show (RoseNode x list) = show x ++ " " ++ show list
 
-
 -- b. **Eq instance for RoseTree**
 
 --    Write an `Eq` instance for `RoseTree a` (assuming `Eq a`).
 
 instance Eq a => Eq (RoseTree a) where
   (RoseNode x xlist) == (RoseNode y ylist) = x == y && xlist == ylist
-
 
 -- c. **Functor instance for RoseTree**
 
@@ -91,7 +88,6 @@ instance Eq a => Eq (RoseTree a) where
 instance Functor RoseTree where
   fmap f (RoseNode x list) = RoseNode (f x) $ fmap (fmap f) list
 
-
 -- d. **Foldable instance for RoseTree**
 
 --    Write a `Foldable` instance for `RoseTree` by implementing `foldMap`:
@@ -106,7 +102,6 @@ instance Functor RoseTree where
 instance Foldable RoseTree where
   foldMap f (RoseNode x trees) = f x <> mconcat (fmap (foldMap f) trees)
 
-
 roseToList :: RoseTree a -> [a]
 roseToList = foldMap (: [])
 
@@ -119,10 +114,8 @@ instance Monoid (InvList a) where
 postRoseToList :: RoseTree a -> [a]
 postRoseToList tree = toList $ foldMap (\t -> InvList [t]) tree
 
-
 roseDepth :: RoseTree a -> Int
 roseDepth tree = undefined
-
 
 
 -- 1. **Implementing map and filter using folds**
@@ -153,8 +146,15 @@ foldlWithControl f seed (x:xs) =
     Left seed' -> foldlWithControl f seed' xs
     Right control -> Right control
 
-findFirstThat :: (a -> Bool) -> [a] -> Either () a
-findFirstThat predicate = foldlWithControl (\_ x -> if predicate x then Right x else Left ()) ()
+-- helper function
+toMaybe :: Either a b -> Maybe b
+toMaybe (Left _) = Nothing
+toMaybe (Right x) = Just x
+
+findFirstThat :: (a -> Bool) -> [a] -> Maybe a
+findFirstThat predicate list = toMaybe $ foldlWithControl (\_ x -> if predicate x then Right x else Left ()) () list
+
+-- extra assignment: do findSequence using foldlWithControl
 
 
 -- 3. **Reversing folds**
@@ -165,3 +165,22 @@ findFirstThat predicate = foldlWithControl (\_ x -> if predicate x then Right x 
 --    - `fib :: Int -> [Int]` — generates the first n Fibonacci numbers
 --    - `iterate' :: (a -> a) -> a -> [a]` — your own implementation of the standard `iterate` function
 --    - `decToBin :: Int -> [Int]` — converts a decimal number to its binary representation (a list of 0s and 1s)
+
+unfoldl :: (b -> Maybe (b, a)) -> b -> [a]
+unfoldl machine state = case machine state of
+  Nothing -> []
+  Just (state', observable) -> observable : unfoldl machine state'
+
+countdown :: Int -> [Int]
+countdown n = unfoldl machine state
+  where
+    machine 0 = Nothing
+    machine m = Just (m-1, m)
+    state = n
+
+fib :: Int -> [Int]
+fib n = unfoldl machine state
+  where
+    machine ((_, _), 0) = Nothing
+    machine ((x, y), m) = Just (((y, x+y), m-1), x)
+    state = ((0, 1), n)
