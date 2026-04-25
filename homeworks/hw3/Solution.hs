@@ -1,7 +1,9 @@
 module Solution where
 
+import Control.Monad (guard, when)
 import Control.Monad.Writer (Writer, tell)
 import Data.Map (Map, (!?))
+import Data.Tuple (swap)
 
 -- 1. **Maze navigation**
 
@@ -38,9 +40,12 @@ move maze pos dir = do
 --    as soon as any step is blocked. Use the `Maybe` monad — do not pattern-match on `Nothing` manually.
 
 followPath :: Maze -> Pos -> [Dir] -> Maybe Pos
-followPath maze pos (dir : dirs) = do
-  pos' <- move maze pos dir
-  followPath maze pos' dirs
+followPath maze pos dirs = do
+  if null dirs
+    then return pos
+    else do
+      pos' <- move maze pos $ head dirs
+      followPath maze pos' $ tail dirs
 
 --    (c) Write a function
 --    ```haskell
@@ -50,10 +55,13 @@ followPath maze pos (dir : dirs) = do
 --    path is blocked at any point.
 
 safePath :: Maze -> Pos -> [Dir] -> Maybe [Pos]
-safePath maze pos (dir : dirs) = do
-  pos' <- move maze pos dir
-  path <- safePath maze pos' dirs
-  return $ pos : path
+safePath maze pos dirs = do
+  if null dirs
+    then return [pos]
+    else do
+      pos' <- move maze pos $ head dirs
+      path <- safePath maze pos' $ tail dirs
+      return $ pos : path
 
 -- 2. **Decoding a message**
 
@@ -63,6 +71,8 @@ safePath maze pos (dir : dirs) = do
 --    type Key = Map Char Char
 --    ```
 
+type Key = Map Char Char
+
 --    write a function
 --    ```haskell
 --    decrypt :: Key -> String -> Maybe String
@@ -70,13 +80,14 @@ safePath maze pos (dir : dirs) = do
 --    that decodes the entire string, returning `Nothing` if any character in the input is missing
 --    from the key. Use `traverse` with the `Maybe` monad.
 
-type Key = Map Char Char
-
 decrypt :: Key -> String -> Maybe String
-decrypt key (str : strs) = do
-  decrypted <- key !? str
-  decryptedList <- decrypt key strs
-  return $ decrypted : decryptedList
+decrypt key strs = do
+  if null strs
+    then return ""
+    else do
+      decrypted <- key !? head strs
+      decryptedList <- decrypt key $ tail strs
+      return $ decrypted : decryptedList
 
 --    Then write
 --    ```haskell
@@ -85,10 +96,12 @@ decrypt key (str : strs) = do
 --    that decrypts a list of words, failing if any single word cannot be fully decoded.
 
 decryptWords :: Key -> [String] -> Maybe [String]
-decryptWords key (word : words) = do
-  decrypted <- decrypt key word
-  decryptedList <- decryptWords key words
-  return $ decrypted : decryptedList
+decryptWords key words = do
+  if null words then return []
+  else do 
+    decrypted <- decrypt key $ head words
+    decryptedList <- decryptWords key $ tail words
+    return $ decrypted : decryptedList
 
 -- 3. **Seating arrangements**
 
@@ -110,8 +123,21 @@ type Guest = String
 
 type Conflict = (Guest, Guest)
 
+permutations :: [a] -> [[a]]
+permutations [] = return []
+permutations xs = do
+  i <- [0 .. length xs - 1]
+  per <- permutations (take i xs ++ drop (i + 1) xs)
+  return $ (xs !! i) : per
+
 seatings :: [Guest] -> [Conflict] -> [[Guest]]
-seatings = undefined
+seatings guests conflicts = do
+  per <- permutations guests
+  let pairs = [(per !! i, per !! ((i + 1) `mod` length per)) | i <- [0 .. length per - 1]]
+      revPairs = fmap swap pairs
+      allPairs = pairs ++ revPairs
+  guard $ null [(pair, con) | pair <- allPairs, con <- conflicts, pair == con]
+  return per
 
 -- 4. **Result monad with warnings**
 
@@ -206,7 +232,15 @@ simplify (Add x y) = do
   y' <- simplify y
   if x' == Lit 0 then tell ["0 + e -> e"] >> return y'
   else if y' == Lit 0 then tell ["e + 0 -> e"] >> return x'
+  else if all isLit [x', y'] then
+    let x'' = dropLit x'
+        y'' = dropLit y'
+    in tell [show x'' ++ " + " ++ show y'' ++ " -> " ++ show (x'' + y'')] >> return (Lit (x'' + y''))
   else return $ Add x' y'
+  where
+    isLit (Lit _) = True
+    isLit _ = False
+    dropLit (Lit a) = a
 simplify (Mul x y) = do
   x' <- simplify x
   y' <- simplify y
@@ -214,15 +248,29 @@ simplify (Mul x y) = do
   else if y' == Lit 0 then tell ["e * 0 -> 0"] >> return (Lit 0)
   else if x' == Lit 1 then tell ["1 * e -> e"] >> return y'
   else if y' == Lit 1 then tell ["e * 1 -> e"] >> return x'
+  else if all isLit [x', y'] then
+    let x'' = dropLit x'
+        y'' = dropLit y'
+    in tell [show x'' ++ " * " ++ show y'' ++ " -> " ++ show (x'' * y'')] >> return (Lit (x'' * y''))
   else return $ Mul x' y'
+  where
+    isLit (Lit _) = True
+    isLit _ = False
+    dropLit (Lit a) = a
 simplify (Neg x) = do
   x' <- simplify x
-  if isNeg x' then tell ["- (- e) = e"] >> return (dropNeg x')
+  if isNeg x' then tell ["-(-e) = e"] >> return (dropNeg x')
+  else if isLit x' then 
+    let x'' = dropLit x'
+    in tell ["-(" ++ show x'' ++ ") -> -" ++ show x''] >> return (Lit (-x''))
   else return $ Neg x'
   where
     isNeg (Neg e) = True
     isNeg _ = False
     dropNeg (Neg e) = e
+    isLit (Lit _) = True
+    isLit _ = False
+    dropLit (Lit a) = a
 
 -- 6. **ZipList — an Applicative that is not a Monad**
 
@@ -231,7 +279,7 @@ simplify (Neg x) = do
 --    newtype ZipList a = ZipList { getZipList :: [a] } deriving (Show)
 --    ```
 
-newtype ZipList a = ZipList { getZipList :: [a] } deriving (Show)
+newtype ZipList a = ZipList {getZipList :: [a]} deriving (Show)
 
 --    (a) Implement the `Functor` and `Applicative` instances for `ZipList`:
 --    ```haskell
@@ -253,7 +301,7 @@ instance Applicative ZipList where
       infList = x : infList
   ZipList [] <*> _ = ZipList []
   _ <*> ZipList [] = ZipList []
-  ZipList (f:fs) <*> ZipList (x:xs) = let ZipList ys = ZipList fs <*> ZipList xs in ZipList (f x : ys)
+  ZipList (f : fs) <*> ZipList (x : xs) = let ZipList ys = ZipList fs <*> ZipList xs in ZipList (f x : ys)
 
 --    (b) Verify that your instance satisfies the applicative laws by testing:
 --    ```haskell
