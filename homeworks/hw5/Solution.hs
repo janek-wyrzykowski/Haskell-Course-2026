@@ -1,19 +1,22 @@
 module Solution where
 
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.State
   ( MonadState (get, put),
+    MonadTrans (lift),
     State,
     StateT,
     evalState,
+    evalStateT,
     execState,
     gets,
-    modify, MonadTrans (lift),
+    modify,
   )
-import Data.Map (Map, empty, insert, lookup, (!))
+import Data.Map (Map, empty, fromList, insert, lookup, (!))
 import Distribution.Simple.Utils (safeTail)
 import GHC.Real (infinity)
 import Text.Read (readMaybe)
+import Text.Printf (printf)
 
 -- 1. **Stack machine**
 
@@ -239,28 +242,164 @@ editDistance xs ys = evalState (editDistM xs ys (length xs) (length ys)) empty
 -- 5. Add visual effects through appropriate text formatting to make the game more engaging.
 -- 6. Complete the map implementation by adding different paths to the goal with various challenges.
 
+data Modifier = None | ReducedByOne | Halved
+
+data Location = DecisionLocation [String] | ObstacleLocation | TreasureLocation Int | TrapLocation Int
+
 data GameState = GameState
-  { playerPosition :: Int,
+  { playerPath :: String,
+    playerPosition :: Int,
     playerEnergy :: Int,
-    playerPoints :: Int
+    playerModifier :: Modifier,
+    playerPoints :: Int,
+    locations :: Map (String, Int) Location
   }
+
+initialGameState :: GameState
+initialGameState =
+  GameState
+    { playerPath = "plains",
+      playerPosition = 0,
+      playerEnergy = 15,
+      playerModifier = None,
+      playerPoints = 0,
+      locations = fromList [
+        (("plains", 1), ObstacleLocation),
+        (("plains", 3), TreasureLocation 5),
+        (("plains", 4), DecisionLocation ["plains", "highlands"]),
+        (("plains", 6), DecisionLocation ["highlands", "mountains"]),
+        (("plains", 8), TrapLocation 10),
+        (("plains", 9), TreasureLocation 10),
+        (("plains", 11), DecisionLocation ["mountains"]),
+        (("plains", 12), ObstacleLocation),
+        (("plains", 14), DecisionLocation ["plains", "highlands", "mountains"]),
+        (("plains", 15), TreasureLocation 5),
+        (("plains", 17), ObstacleLocation),
+        (("plains", 18), TreasureLocation 15),
+        (("plains", 21), DecisionLocation ["highlands", "mountains"]),
+        (("plains", 22), TreasureLocation 5),
+        (("plains", 24), TreasureLocation 10),
+        (("plains", 25), TrapLocation 5),
+        (("plains", 27), TreasureLocation 10),
+        (("plains", 28), ObstacleLocation),
+        (("highlands", 5), TreasureLocation 10),
+        (("highlands", 7), ObstacleLocation),
+        (("highlands", 8), TrapLocation 10),
+        (("highlands", 10), TreasureLocation 15),
+        (("highlands", 11), DecisionLocation ["highlands", "mountains"]),
+        (("highlands", 14), TreasureLocation 25),
+        (("highlands", 16), TrapLocation 5),
+        (("highlands", 17), DecisionLocation ["plains", "highlands", "mountains"]),
+        (("highlands", 20), TreasureLocation 15),
+        (("highlands", 21), ObstacleLocation),
+        (("highlands", 23), TreasureLocation 25),
+        (("highlands", 24), DecisionLocation ["highlands", "mountains"]),
+        (("highlands", 26), TrapLocation 10),
+        (("highlands", 27), TreasureLocation 30),
+        (("highlands", 29), ObstacleLocation),
+        (("mountains", 7), TreasureLocation 25),
+        (("mountains", 8), TrapLocation 20),
+        (("mountains", 10), TreasureLocation 20),
+        (("mountains", 12), ObstacleLocation),
+        (("mountains", 13), TreasureLocation 30),
+        (("mountains", 14), TreasureLocation 40),
+        (("mountains", 15), DecisionLocation ["highlands", "mountains"]),
+        (("mountains", 17), TrapLocation 20),
+        (("mountains", 19), ObstacleLocation),
+        (("mountains", 21), DecisionLocation ["plains", "highlands", "mountains"]),
+        (("mountains", 22), TreasureLocation 35),
+        (("mountains", 24), TreasureLocation 50),
+        (("mountains", 25), TrapLocation 30),
+        (("mountains", 27), DecisionLocation ["highlands", "mountains"]),
+        (("mountains", 28), ObstacleLocation)
+      ]
+    }
 
 type AdventureGame a = StateT GameState IO a
 
 movePlayer :: Int -> AdventureGame Int
-movePlayer n = undefined
+movePlayer n = do
+  startPosition <- gets playerPosition
+  modifier <- gets playerModifier
+  let spacesMoved = case modifier of
+        None -> n
+        ReducedByOne -> n - 1
+        Halved -> floor (fromIntegral n / 2)
+  modify (\s -> s {playerPosition = startPosition + spacesMoved})
+  return spacesMoved
 
 makeDecision :: [String] -> AdventureGame String
-makeDecision = undefined
+makeDecision options = do
+  decision <- lift $ getPlayerChoice options
+  modify (\s -> s {playerPath = decision})
+  return decision
 
 handleLocation :: AdventureGame Bool
-handleLocation = undefined
+handleLocation = do
+  path <- gets playerPath
+  position <- gets playerPosition
+  locations <- gets locations
+  let maybeLoc = Data.Map.lookup (path, position) locations
+  case maybeLoc of
+    Nothing -> if position >= 30 then do
+        lift $ putStrLn "You found the grand treasure you've been after! Congratulations!"
+        points <- gets playerPoints
+        let bonus = case path of
+              "plains" -> 20
+              "highlands" -> 50
+              "mountains" -> 100
+        modify (\s -> s {playerPoints = points + bonus})
+        return True
+      else return False
+    Just location -> case location of
+      DecisionLocation paths -> do
+        lift $ putStrLn "Your path is splitting and leading to different regions."
+        decision <- makeDecision paths
+        return False
+      ObstacleLocation -> do
+        lift $ putStrLn "You stumbled upon a fallen tree on the road."
+        lift $ putStrLn "Removing it will require some effort and delay your journey."
+        case path of
+          "plains" -> modify (\s -> s {playerModifier = ReducedByOne})
+          "highlands" -> do
+            score <- lift getDiceRoll
+            modify (\s -> s {playerModifier = if score >= 4 then ReducedByOne else Halved})
+          "mountains" -> modify (\s -> s {playerModifier = Halved})
+        return False
+      TreasureLocation bonus -> do
+        lift $ putStrLn "You found a treasure chest!"
+        points <- gets playerPoints
+        modify (\s -> s {playerPoints = points + bonus})
+        return False
+      TrapLocation penalty -> do
+        lift $ putStrLn "Goblins attacked you and stole some of your gold."
+        points <- gets playerPoints
+        modify (\s -> s {playerPoints = points - penalty})
+        return False
 
 playTurn :: AdventureGame Bool
-playTurn = undefined
+playTurn = do
+  energy <- gets playerEnergy
+  if energy == 0
+    then lift $ putStrLn "You ran out of energy; your journey is over." >> return True
+    else do
+      state <- get
+      lift $ displayGameState state
+      modify (\s -> s {playerEnergy = energy - 1})
+      diceThrow <- lift getDiceRoll
+      movePlayer diceThrow
+      modify (\s -> s {playerModifier = None})
+      handleLocation
 
 playGame :: AdventureGame ()
-playGame = undefined
+playGame = do
+  go
+  score <- gets playerPoints
+  lift $ putStrLn $ "You finished the game with score: " ++ show score
+  where
+    go = do
+      isEnded <- playTurn
+      unless isEnded go
 
 getDiceRoll :: IO Int
 getDiceRoll = do
@@ -274,7 +413,21 @@ getDiceRoll = do
     Nothing -> putStrLn "Invalid input, enter a number between 1 and 6." >> getDiceRoll
 
 displayGameState :: GameState -> IO ()
-displayGameState = undefined
+displayGameState state = do
+  let energy = playerEnergy state
+      points = playerPoints state
+      path = playerPath state
+      position = playerPosition state
+  putStrLn ""
+  putStrLn $ replicate 56 '#'
+  putStrLn $ "#" ++ replicate 20 ' ' ++ "ADVENTURE GAME" ++ replicate 20 ' ' ++ "#"
+  putStrLn $ "#" ++ replicate 54 ' ' ++ "#"
+  putStrLn $ "# Energy: " ++ printf "%02d" energy ++ " / 15" ++ replicate 26 ' ' ++ "Points: " ++ printf "%03d" points ++ " #"
+  putStrLn $ "#" ++ replicate 54 ' ' ++ "#"
+  putStrLn $ "# Progress: " ++ replicate position '_' ++ "o" ++ replicate (29 - position) '_' ++ printf "%12s" ("(" ++ path ++ ")") ++ " #"
+  putStrLn $ "#" ++ replicate 54 ' ' ++ "#"
+  putStrLn $ replicate 56 '#'
+  putStrLn ""
 
 getPlayerChoice :: [String] -> IO String
 getPlayerChoice options = do
@@ -284,3 +437,7 @@ getPlayerChoice options = do
   if choice `notElem` options
     then putStrLn "Invalid value, try again." >> getPlayerChoice options
     else return choice
+
+-- Added for convenience
+playGameWrapper :: IO ()
+playGameWrapper = evalStateT playGame initialGameState
