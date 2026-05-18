@@ -1,6 +1,8 @@
 module Tutorials05 where
-import Control.Monad.Trans.Maybe
+
+import Control.Monad.State
 import Control.Monad.Trans.Class
+import Control.Monad.Trans.Maybe
 import Data.Char
 
 -- 1. **State Monad for tracking state**
@@ -47,34 +49,31 @@ calculator = do
     translate "mul" = (*)
     translate "div" = div
 
--- 5. **The ReaderT transformer for application configuration**
-
---    Define a type `Config` that contains application parameters (e.g. `verbose :: Bool`, `maxRetries :: Int`).
---    Then implement a function `processItem :: String -> ReaderT Config IO Bool` that processes an item
---    and reports the result. The function should check the value of `verbose` in the configuration and
---    print additional information when it is set to `True`. Finally, write a function
---    `processItems :: [String] -> ReaderT Config IO [Bool]` that processes a list of items and returns
---    a list of results.
-
--- 6. **Error handling with ExceptT**
-
---    Write a function `readFileWithExcept :: FilePath -> ExceptT String IO String` that tries to read
---    the contents of a file and handles potential errors using the ExceptT transformer. Then implement
---    a function `processFiles :: [FilePath] -> ExceptT String IO [String]` that processes a list of files,
---    continuing even if some files cannot be read. Add a helper function
---    `logError :: String -> ExceptT String IO ()` that writes errors to a log file.
-
--- Instead of ExceptT, we're gonna try do something with MaybeT
+-- 5. **A safer calculator with MaybeT**
+--
+--    The `calculator :: IO ()` from task 4 uses `readLn :: IO Int`, which throws a runtime exception
+--    whenever the user types something that is not a valid integer (e.g. `"abc"` or an empty line).
+--    Rewrite the calculator using the `MaybeT` transformer from `Control.Monad.Trans.Maybe`
+--    so that bad input is reported as `Nothing` instead of crashing the program.
+--
+--    * Define a helper `readInt :: MaybeT IO Int` that reads a line from standard input and
+--      produces `Nothing` when the line is not a valid integer (use `readMaybe` from `Text.Read`,
+--      or check the input by hand with `Data.Char.isDigit`).
+--    * Define a helper `readOp :: MaybeT IO (Int -> Int -> Int)` that reads an operation name
+--      (e.g. `"sum"`, `"difference"`, `"product"`) and returns the corresponding function, or
+--      `Nothing` if the name is not recognised.
+--    * Implement `goodCalculator :: MaybeT IO ()` that reads two integers and an operation
+--      using the helpers above and prints the result.
 
 type ErrorIO a = MaybeT IO a
 
 readName :: ErrorIO String
 readName = do
   line <- lift getLine
-  if predicate line then pure line else hoistMaybe Nothing 
+  if predicate line then pure line else hoistMaybe Nothing
   where
     predicate :: String -> Bool
-    predicate (x:_) = isUpper x
+    predicate (x : _) = isUpper x
     predicate _ = False
 
 readInt :: ErrorIO Int
@@ -85,6 +84,54 @@ readInt = do
     allDigits :: String -> Bool
     allDigits line = undefined
 
+-- 6. **StateT — state on top of another monad**
+
+--    Recall `State s a ≅ s -> (a, s)`. Wrapping the result in an
+--    arbitrary monad `m` gives the state monad transformer:
+
+--    ```haskell
+--    newtype StateT s m a = StateT { runStateT :: s -> m (a, s) }
+--    ```
+--    A value of type `StateT s m a` is a stateful step whose result lives in `m`.
+
+newtype StateT' s m a = StateT' {runStateT' :: s -> m (a, s)}
+
+--    **(a) The `Monad` instance.** Complete the following definition:
+
+--    ```haskell
+--    instance Monad m => Monad (StateT s m) where
+--      return a          = StateT $ \s -> ???
+--      (StateT g) >>= f  = StateT $ \s -> ???
+--    ```
+
+instance (Functor m) => Functor (StateT' s m) where
+  fmap f (StateT' g) = StateT' $ fmap fxid . g
+    where
+      fxid (x, s) = (f x, s)
+
+instance (Monad m) => Applicative (StateT' s m) where
+  pure x = StateT' $ \state -> pure (x, state)
+  liftA2 f (StateT' g) (StateT' h) = StateT' $ \state -> do
+    (x, state') <- g state
+    (y, state'') <- h state'
+    return (f x y, state'')
+
+instance (Monad m) => Monad (StateT' s m) where
+  (StateT' g) >>= f = StateT' $ \state -> do
+    (x, state') <- g state
+    (runStateT' . f) x state'
+
+--    **(b) The `MonadTrans` instance.** Complete the lifting operation:
+
+--    ```haskell
+--    instance MonadTrans (StateT s) where
+--      lift ma = StateT $ \s -> ???   -- use fmap to pair the result of ma with s
+--    ```
+
+instance MonadTrans (StateT' s) where
+  lift ma = StateT' $ \state -> do
+    x <- ma
+    return (x, state)
 
 -- 7. **Combining StateT and IO**
 
@@ -96,6 +143,46 @@ readInt = do
 --    * `atmSession :: StateT BankState IO ()` — runs an interactive session with the user
 
 --    Each operation should print appropriate messages on the screen and update the account state.
+
+newtype BankState = BankState {balance :: Int} deriving (Show, Eq, Ord)
+
+type ATM = StateT BankState IO
+
+withdraw :: Int -> ATM Bool
+withdraw value = do
+  bankState <- get
+  if balance bankState >= value
+    then do
+      let newBankState = BankState $ balance bankState - value
+      put newBankState
+      return True
+    else do
+      lift $ print "Withdrawal not possible"
+      return False
+
+deposit :: Int -> ATM ()
+deposit = undefined
+
+checkBalance :: ATM Int
+checkBalance = do
+  bankState <- get
+  lift $ putStrLn $ "The current balance is " ++ show (balance bankState)
+  return $ balance bankState
+
+atmSession :: ATM ()
+atmSession = do
+  lift $ putStrLn "Press d for Deposit, c for Check Balance"
+  char <- lift getChar
+  case char of
+    'd' -> do
+      value <- lift (readLn :: IO Int)
+      withdraw value
+      atmSession
+    'c' -> do
+      checkBalance
+      atmSession
+    _ -> do
+      lift $ putStrLn "Unsupported functionality"
 
 -- 8. **Implementing a stack of transformers**
 
