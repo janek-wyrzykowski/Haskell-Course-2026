@@ -1,8 +1,8 @@
 module ATPL (parseProgram, pretty) where
 
 import Control.Monad.State
-import Data.Char (isLower, isSpace, isUpper)
-import Data.Map
+import Data.Char
+import Data.Map ( fromList, Map )
 
 -- ~~~~~~~~~~~~~~~
 -- ~~~~~ AST ~~~~~
@@ -35,29 +35,37 @@ data LogOp = And | Or | Implies | Iff deriving (Show, Eq)
 -- ~~~~~~~~~~~~~~~~~~
 
 -- ~~~~~ Type definition ~~~~~
-type Parser a = StateT String [] a
+type Parser a = StateT String (Either String) a
 
-runParser :: Parser a -> String -> [(a, String)]
+runParser :: Parser a -> String -> Either String (a, String)
 runParser = runStateT
 
 -- ~~~~~ Basics ~~~~~
 zero :: Parser a
-zero = StateT (const [])
+zero = StateT $ const $ Left "Unknown parse error"
 
 item :: Parser Char
 item = do
   s <- get
   case s of
+    [] -> StateT $ const $ Left "Unexpected end of input"
     c : cs -> put cs >> pure c
-    [] -> zero
 
 (<|>) :: Parser a -> Parser a -> Parser a
 p1 <|> p2 = StateT $ \s ->
   case runStateT p1 s of
-    [] -> runStateT p2 s
-    parses -> parses
+    Left err1 -> case runStateT p2 s of
+      Left err2 -> Left (err1 ++ "  |  " ++ err2)
+      Right r -> Right r
+    Right r -> Right r
 
 infixr 5 <|>
+
+label :: String -> Parser a -> Parser a
+label message parser = StateT $ \s ->
+  case runStateT parser s of
+    Left _ -> Left message
+    Right r -> Right r
 
 -- ~~~~~ Building blocks ~~~~~
 sat :: (Char -> Bool) -> Parser Char
@@ -120,19 +128,19 @@ chainl1 p op = p >>= rest
       )
         <|> pure x
 
+-- ~~~~~ Formula parsing ~~~~~
 lowerWord :: Parser String
 lowerWord = do
-  word <- many1 (sat isLower <|> char '_')
+  word <- label "Expected a snake_case word" $ many1 (sat isLower <|> char '_')
   spaces
   pure word
 
 upperWord :: Parser String
 upperWord = do
-  word <- many1 (sat isUpper <|> char '_')
+  word <- label "Expected a CONSTANT_CASE word" $ many1 (sat isUpper <|> char '_')
   spaces
   pure word
 
--- ~~~~~ Formula parsing ~~~~~
 parseFormula, parseTerm :: Parser Formula
 parseFormula = parseTerm `chainl1` binop
 parseTerm = parseNot <|> parseVar <|> parseConst <|> parseParen
@@ -141,20 +149,20 @@ parseTerm = parseNot <|> parseVar <|> parseConst <|> parseParen
       var <- token upperWord
       pure (Var var)
     parseConst =
-      (symbol "0" >> pure (Const False))
+      label "Expected one of '0', '1'" (symbol "0" >> pure (Const False))
         <|> (symbol "1" >> pure (Const True))
     parseNot = do
-      _ <- symbol "~"
+      _ <- label "Expected '~'" $ symbol "~"
       Not <$> parseFormula
     parseParen = do
-      _ <- symbol "("
+      _ <- label "Expected '('" $ symbol "("
       f <- parseFormula
-      _ <- symbol ")"
+      _ <- label "Unclosed parentheses" $ symbol ")"
       pure f
 
 binop :: Parser (Formula -> Formula -> Formula)
 binop =
-  (symbol "/\\" >> pure (BinOp And))
+  label "Unknown binary operator" (symbol "/\\" >> pure (BinOp And))
     <|> (symbol "\\/" >> pure (BinOp Or))
     <|> (symbol "->" >> pure (BinOp Implies))
     <|> (symbol "<=>" >> pure (BinOp Iff))
@@ -162,41 +170,42 @@ binop =
 -- ~~~~~ Program parsing ~~~~~
 parseReasoning :: String -> Parser Reasoning
 parseReasoning stepType = do
-  reasoningName <- lowerWord
-  reasoningArgs <- many lowerWord
   case stepType of
     "intro" -> pure Intro
-    "have" -> pure $ Reasoning reasoningName reasoningArgs
     "exact" -> pure Exact
+    "have" -> do
+      label "Expected 'by' keyword after the formula in a 'have' proof step" $ symbol "by"
+      reasoningName <- lowerWord
+      reasoningArgs <- many lowerWord
+      pure $ Reasoning reasoningName reasoningArgs
 
 parseProofStep :: Parser (String, ProofStep)
 parseProofStep = do
   spaces
-  stepType <- symbol "intro" <|> symbol "have" <|> symbol "exact"
+  stepType <- label "Expected one of: 'intro', 'have', 'exact'" $ symbol "intro" <|> symbol "have" <|> symbol "exact"
   stepName <- lowerWord
-  symbol ":"
+  label "Expected ':' after the proof step name" $ symbol ":"
   formula <- parseFormula
-  symbol "by"
   reasoning <- parseReasoning stepType
-  symbol ";"
+  label "Expected ';' at the end of the proof step" $ symbol ";"
   pure (stepName, ProofStep (formula, reasoning))
 
 parseTheorem :: Parser (String, Statement)
 parseTheorem = do
-  symbol "theorem"
+  label "Expected 'theorem' keyword" $ symbol "theorem"
   theoremName <- lowerWord
-  symbol ":"
+  label "Expected ':' after the theorem name" $ symbol ":"
   formula <- parseFormula
-  symbol "proof"
+  label "Expected 'proof' keyword" $ symbol "proof"
   proofSteps <- many1 parseProofStep
-  symbol "qed"
+  label "Expected 'qed' keyword" $ symbol "qed"
   pure (theoremName, Theorem formula (Proof (fromList proofSteps)))
 
 parseAxiom :: Parser (String, Statement)
 parseAxiom = do
-  symbol "axiom"
+  label "Expected 'axiom' keyword" $ symbol "axiom"
   axiomName <- lowerWord
-  symbol ":"
+  label "Expected ':' after the axiom name" $ symbol ":"
   formula <- parseFormula
   pure (axiomName, Axiom formula)
 
@@ -209,11 +218,12 @@ parseProg = do
   pure $ Program (fromList statements)
 
 -- TODO: write error handling
-parseProgram :: String -> Maybe Program
+parseProgram :: String -> Either String Program
 parseProgram s =
   case runParser (spaces >> parseProg) s of
-    ((e, "") : _) -> Just e
-    _ -> Nothing
+    Right (prog, "") -> Right prog
+    Right (_, rest) -> Left $ "Unexpected trailing input: " ++ take 40 rest
+    Left err -> Left err
 
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~
 -- ~~~~~ Pretty printer ~~~~~
