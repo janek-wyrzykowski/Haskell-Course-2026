@@ -5,6 +5,7 @@
 ### Formulae
 
 Formulae can contain the following symbols:
+- `0` and `1` corresponding to true and false values respectively,
 - variable names consisting of capital letters and underscores only, e.g. `A`, `VAR`, `MY_VAR`,
 - logical symbols: `~` (negation), `/\` (conjunction), `\/` (alternative), `=>` (implication), `<=>` (equivalence),
 - parentheses for operation order enforcement, e.g. `A /\ (B \/ C)`,
@@ -16,7 +17,7 @@ The list of valid formulae is listed below.
 2. If `p` is a formula, ` p` and `p ` is also a formula.
 3. If `p` is a formula, then `(p)` is also a formula.
 4. If `p` is a formula, `~p` is a formula.
-5. If `p` and `q` are formulae, then `p /\ q`, `p \/ q`, `p => q`, `p <=> q` are also formulae.
+5. If `p` and `q` are formulae, then `p/\q`, `p\/q`, `p->q`, `p<=>q` are also formulae.
 
 ### Axioms
 
@@ -44,3 +45,5 @@ proof
     exact [name];
 qed
 ```
+
+If `intro` or `exact` line is ended with a `by [property_name facts...]` clause, it will not throw an error - instead, the clause is ignored.
