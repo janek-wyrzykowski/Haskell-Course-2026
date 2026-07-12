@@ -99,9 +99,6 @@ sat predicate = do
 char :: Char -> Parser Char
 char c = sat (== c)
 
--- digit :: Parser Char
--- digit = sat isDigit
-
 spaceP :: Parser Char
 spaceP = sat isSpace
 
@@ -134,11 +131,6 @@ token p = do
 
 symbol :: String -> Parser String
 symbol cs = token (string cs)
-
--- nat :: Parser Natural
--- nat = do
---   ds <- many1 digit
---   pure (read ds)
 
 chainl1 :: Parser a -> Parser (a -> a -> a) -> Parser a
 chainl1 p op = p >>= rest
@@ -240,7 +232,6 @@ parseProg = do
   statements <- many1 parseStatement
   pure $ Program (fromList statements)
 
--- TODO: write error handling
 parseProgram :: String -> Either ParseError Program
 parseProgram s =
   case runParser (spaces >> parseProg) s of
