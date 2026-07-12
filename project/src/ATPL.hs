@@ -35,39 +35,62 @@ data LogOp = And | Or | Implies | Iff deriving (Show, Eq)
 -- ~~~~~~~~~~~~~~~~~~
 
 -- ~~~~~ Type definition ~~~~~
-type Parser a = StateT String (Either String) a
+data Position = Position {posLine :: Int, posCol :: Int} deriving (Show, Eq)
 
-runParser :: Parser a -> String -> Either String (a, String)
-runParser = runStateT
+instance Ord Position where
+  Position al ac <= Position bl bc = 
+    if al == bl
+    then ac <= bc 
+    else al <= bl
 
--- ~~~~~ Basics ~~~~~
-zero :: Parser a
-zero = StateT $ const $ Left "Unknown parse error"
+data ParseError = ParseError {errorPos :: Position, errorMsg :: String} deriving (Show, Eq)
 
-item :: Parser Char
-item = do
-  s <- get
-  case s of
-    [] -> StateT $ const $ Left "Unexpected end of input"
-    c : cs -> put cs >> pure c
+data ParseState = ParseState {input :: String, position :: Position} deriving (Show, Eq)
+
+type Parser a = StateT ParseState (Either ParseError) a
+
+runParser :: Parser a -> String -> Either ParseError (a, ParseState)
+runParser p s = runStateT p (ParseState s (Position 1 1))
+
+failParse :: String -> Parser a
+failParse msg = StateT $ \s -> Left $ ParseError (position s) msg
+
+advance :: Char -> Position -> Position
+advance '\n' (Position l _) = Position (l + 1) 1
+advance _ (Position l c) = Position l (c + 1)
 
 (<|>) :: Parser a -> Parser a -> Parser a
 p1 <|> p2 = StateT $ \s ->
   case runStateT p1 s of
-    Left err1 -> case runStateT p2 s of
-      Left err2 -> Left (err1 ++ "  |  " ++ err2)
-      Right r -> Right r
     Right r -> Right r
+    Left err1 -> case runStateT p2 s of
+      Right r -> Right r
+      Left err2 -> do
+        let pos1 = errorPos err1
+            pos2 = errorPos err2
+        Left $ if pos1 >= pos2 then err1 else err2
 
 infixr 5 <|>
 
 label :: String -> Parser a -> Parser a
 label message parser = StateT $ \s ->
   case runStateT parser s of
-    Left _ -> Left message
+    Left (ParseError p _) -> Left (ParseError p message)
     Right r -> Right r
 
 -- ~~~~~ Building blocks ~~~~~
+zero :: Parser a
+zero = failParse "Parse error"
+
+item :: Parser Char
+item = do
+  s <- get
+  case input s of
+    [] -> failParse "Unexpected end of input"
+    c : cs -> do
+      put $ ParseState cs (advance c (position s))
+      pure c
+
 sat :: (Char -> Bool) -> Parser Char
 sat predicate = do
   c <- item
@@ -218,11 +241,11 @@ parseProg = do
   pure $ Program (fromList statements)
 
 -- TODO: write error handling
-parseProgram :: String -> Either String Program
+parseProgram :: String -> Either ParseError Program
 parseProgram s =
   case runParser (spaces >> parseProg) s of
-    Right (prog, "") -> Right prog
-    Right (_, rest) -> Left $ "Unexpected trailing input: " ++ take 40 rest
+    Right (prog, ParseState {input = ""}) -> Right prog
+    Right (_, st) -> Left $ ParseError (position st) "Unexpected trailing input"
     Left err -> Left err
 
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~
