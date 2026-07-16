@@ -7,17 +7,17 @@
 Formulae can contain the following symbols:
 - `0` and `1` corresponding to true and false values respectively,
 - variable names consisting of capital letters and underscores only, e.g. `A`, `VAR`, `MY_VAR`,
-- logical symbols: `~` (negation), `/\` (conjunction), `\/` (alternative), `=>` (implication), `<=>` (equivalence),
-- parentheses for operation order enforcement, e.g. `A /\ (B \/ C)`,
+- logical symbols: `~` (negation), `^` (conjunction), `v` (alternative), `=>` (implication), `<=>` (equivalence),
+- parentheses for operation order enforcement, e.g. `A ^ (B v C)`,
 - any amount of spaces.
 
 The list of valid formulae is listed below.
 
 1. A variable is a formula.
-2. If `p` is a formula, ` p` and `p ` is also a formula.
-3. If `p` is a formula, then `(p)` is also a formula.
-4. If `p` is a formula, `~p` is a formula.
-5. If `p` and `q` are formulae, then `p/\q`, `p\/q`, `p->q`, `p<=>q` are also formulae.
+2. If `P` is a formula, ` P` and `P ` is also a formula.
+3. If `P` is a formula, then `(P)` is also a formula.
+4. If `P` is a formula, `~P` is a formula.
+5. If `P` and `Q` are formulae, then `P^Q`, `PvQ`, `P->Q`, `P<=>Q` are also formulae.
 
 ### Axioms
 
@@ -45,5 +45,3 @@ proof
     exact [name];
 qed
 ```
-
-If `intro` or `exact` line is ended with a `by [property_name facts...]` clause, it will not throw an error - instead, the clause is ignored.

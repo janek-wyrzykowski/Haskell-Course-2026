@@ -2,20 +2,21 @@ module ATPL (parseProgram, pretty) where
 
 import Control.Monad.State
 import Data.Char
-import Data.Map ( fromList, Map )
+import Data.Map (Map, fromList)
+import Data.List (intercalate)
 
 -- ~~~~~~~~~~~~~~~
 -- ~~~~~ AST ~~~~~
 -- ~~~~~~~~~~~~~~~
 
-newtype Program = Program (Map String Statement) deriving (Show, Eq)
+newtype Program = Program [(String, Statement)] deriving (Show, Eq)
 
 data Statement
   = Axiom Formula
   | Theorem Formula Proof
   deriving (Show, Eq)
 
-newtype Proof = Proof {proofSteps :: Map String ProofStep} deriving (Show, Eq)
+newtype Proof = Proof {proofSteps :: [(String, ProofStep)]} deriving (Show, Eq)
 
 newtype ProofStep = ProofStep (Formula, Reasoning) deriving (Show, Eq)
 
@@ -38,10 +39,10 @@ data LogOp = And | Or | Implies | Iff deriving (Show, Eq)
 data Position = Position {posLine :: Int, posCol :: Int} deriving (Show, Eq)
 
 instance Ord Position where
-  Position al ac <= Position bl bc = 
+  Position al ac <= Position bl bc =
     if al == bl
-    then ac <= bc 
-    else al <= bl
+      then ac <= bc
+      else al <= bl
 
 data ParseError = ParseError {errorPos :: Position, errorMsg :: String} deriving (Show, Eq)
 
@@ -99,8 +100,8 @@ sat predicate = do
 char :: Char -> Parser Char
 char c = sat (== c)
 
-spaceP :: Parser Char
-spaceP = sat isSpace
+spaceP :: Parser ()
+spaceP = sat isSpace >> pure ()
 
 many :: Parser a -> Parser [a]
 many p = many1 p <|> pure []
@@ -120,7 +121,7 @@ string (c : cs) = do
 
 spaces :: Parser ()
 spaces = do
-  _ <- many spaceP
+  _ <- many (spaceP <|> parseComment)
   pure ()
 
 token :: Parser a -> Parser a
@@ -156,33 +157,40 @@ upperWord = do
   spaces
   pure word
 
+-- TODO fix formula errors to show all options
 parseFormula, parseTerm :: Parser Formula
 parseFormula = parseTerm `chainl1` binop
-parseTerm = parseNot <|> parseVar <|> parseConst <|> parseParen
+parseTerm = label "Formula parsing error. Expected one of: '0', '1', '~', '(', or a CONSTANT_CASE variable name" $ parseNot <|> parseVar <|> parseConst <|> parseParen
   where
     parseVar = do
       var <- token upperWord
       pure (Var var)
     parseConst =
-      label "Expected one of '0', '1'" (symbol "0" >> pure (Const False))
+      (symbol "0" >> pure (Const False))
         <|> (symbol "1" >> pure (Const True))
     parseNot = do
-      _ <- label "Expected '~'" $ symbol "~"
+      _ <- symbol "~"
       Not <$> parseFormula
     parseParen = do
-      _ <- label "Expected '('" $ symbol "("
+      _ <- symbol "("
       f <- parseFormula
       _ <- label "Unclosed parentheses" $ symbol ")"
       pure f
 
 binop :: Parser (Formula -> Formula -> Formula)
 binop =
-  label "Unknown binary operator" (symbol "/\\" >> pure (BinOp And))
-    <|> (symbol "\\/" >> pure (BinOp Or))
+  label "Unknown binary operator" (symbol "^" >> pure (BinOp And))
+    <|> (symbol "v" >> pure (BinOp Or))
     <|> (symbol "->" >> pure (BinOp Implies))
     <|> (symbol "<=>" >> pure (BinOp Iff))
 
 -- ~~~~~ Program parsing ~~~~~
+parseComment :: Parser ()
+parseComment = do
+  string "--"
+  many (sat (/= '\n'))
+  pure ()
+
 parseReasoning :: String -> Parser Reasoning
 parseReasoning stepType = do
   case stepType of
@@ -203,6 +211,7 @@ parseProofStep = do
   formula <- parseFormula
   reasoning <- parseReasoning stepType
   label "Expected ';' at the end of the proof step" $ symbol ";"
+
   pure (stepName, ProofStep (formula, reasoning))
 
 parseTheorem :: Parser (String, Statement)
@@ -214,7 +223,7 @@ parseTheorem = do
   label "Expected 'proof' keyword" $ symbol "proof"
   proofSteps <- many1 parseProofStep
   label "Expected 'qed' keyword" $ symbol "qed"
-  pure (theoremName, Theorem formula (Proof (fromList proofSteps)))
+  pure (theoremName, Theorem formula (Proof proofSteps))
 
 parseAxiom :: Parser (String, Statement)
 parseAxiom = do
@@ -230,7 +239,7 @@ parseStatement = parseTheorem <|> parseAxiom
 parseProg :: Parser Program
 parseProg = do
   statements <- many1 parseStatement
-  pure $ Program (fromList statements)
+  pure $ Program statements
 
 parseProgram :: String -> Either ParseError Program
 parseProgram s =
@@ -243,9 +252,39 @@ parseProgram s =
 -- ~~~~~ Pretty printer ~~~~~
 -- ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
--- ~~~~~ Top-level function ~~~~~
+prettyFormula :: Formula -> String
+prettyFormula (Var s) = s
+prettyFormula (Const b) = if b then "1" else "0"
+prettyFormula (Not f) = "~(" ++ prettyFormula f ++ ")"
+prettyFormula (BinOp op f1 f2) = "(" ++ prettyFormula f1 ++ prettyOp ++ prettyFormula f2 ++ ")"
+  where
+    prettyOp
+      | op == And = " ^ "
+      | op == Or = " v "
+      | op == Implies = " -> "
+      | op == Iff = " <=> "
+
+prettyReasoning :: Reasoning -> String
+prettyReasoning (Reasoning name vars) = " " ++ unwords ("by" : name : vars)
+prettyReasoning Intro = ""
+prettyReasoning Exact = ""
+
+prettyProofStep :: String -> ProofStep -> String
+prettyProofStep stepName (ProofStep (formula, reasoning)) = "  " ++ reasoningName ++ " " ++ stepName ++ ":" ++ prettyFormula formula ++ prettyReasoning reasoning ++ ";"
+  where
+    reasoningName =
+      case reasoning of
+        Reasoning _ _ -> "have"
+        Intro -> "intro"
+        Exact -> "exact"
+
+prettyStatement :: String -> Statement -> String
+prettyStatement statementName statement = case statement of
+  Theorem formula proof -> "theorem " ++ statementName ++ ": " ++ prettyFormula formula ++ "\nproof\n" ++ intercalate "\n" (fmap (uncurry prettyProofStep) (proofSteps proof)) ++ "\nqed"
+  Axiom formula -> "axiom " ++ statementName ++ ": " ++ prettyFormula formula
+
 pretty :: Program -> String
-pretty p = undefined
+pretty (Program statements) = intercalate "\n" (fmap (uncurry prettyStatement) statements)
 
 -- ~~~~~~~~~~~~~~~~~~~~~
 -- ~~~~~ Evaluator ~~~~~
