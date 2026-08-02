@@ -1,9 +1,11 @@
 module ATPL (parseProgram, pretty) where
 
+import Control.Monad (foldM, foldM_, guard)
 import Control.Monad.State
 import Data.Char
-import Data.Map (Map, fromList)
-import Data.List (intercalate)
+import Data.List (intercalate, nub)
+import Data.Map (Map, empty, fromList, lookup, union)
+import Data.Maybe (catMaybes, isJust)
 
 -- ~~~~~~~~~~~~~~~
 -- ~~~~~ AST ~~~~~
@@ -27,9 +29,9 @@ data Formula
   | Const Bool
   | Not Formula
   | BinOp LogOp Formula Formula
-  deriving (Show, Eq)
+  deriving (Show, Ord, Eq)
 
-data LogOp = And | Or | Implies | Iff deriving (Show, Eq)
+data LogOp = And | Or | Implies | Iff deriving (Show, Ord, Eq)
 
 -- ~~~~~~~~~~~~~~~~~~
 -- ~~~~~ Parser ~~~~~
@@ -289,3 +291,71 @@ pretty (Program statements) = intercalate "\n" (fmap (uncurry prettyStatement) s
 -- ~~~~~~~~~~~~~~~~~~~~~
 -- ~~~~~ Evaluator ~~~~~
 -- ~~~~~~~~~~~~~~~~~~~~~
+
+-- ~~~~~ Types and constants ~~~~~
+data Property = Property {assumptions :: [Formula], conclusion :: Formula} deriving (Show, Eq)
+
+type SubMap = Map Formula Formula
+
+properties :: Map String Property
+properties =
+  fromList
+    [ ("double_negation", Property [Not (Not (Var "A"))] (Var "A")),
+      ("or_intro_left", Property [Var "A"] (BinOp Or (Var "A") (Var "B"))),
+      ("or_intro_right", Property [Var "B"] (BinOp Or (Var "A") (Var "B"))),
+      ("or_false_left", Property [BinOp Or (Const False) (Var "A")] (Var "A")),
+      ("or_false_right", Property [BinOp Or (Var "A") (Const False)] (Var "A")),
+      ("excluded_middle", Property [] (BinOp Or (Var "A") (Not (Var "A")))),
+      ("or_commutative", Property [BinOp Or (Var "A") (Var "B")] (BinOp Or (Var "B") (Var "A"))),
+      ("or_simplify", Property [BinOp Or (Var "A") (Var "A")] (Var "A")),
+      ("and_intro", Property [Var "A", Var "B"] (BinOp And (Var "A") (Var "B"))),
+      ("and_elim_left", Property [BinOp And (Var "A") (Var "B")] (Var "A")),
+      ("and_elim_right", Property [BinOp And (Var "A") (Var "B")] (Var "B")),
+      ("and_true_left", Property [BinOp And (Const True) (Var "A")] (Var "A")),
+      ("and_true_right", Property [BinOp And (Var "A") (Const True)] (Var "A")),
+      ("and_commutative", Property [BinOp And (Var "A") (Var "B")] (BinOp And (Var "B") (Var "A"))),
+      ("and_simplify", Property [BinOp And (Var "A") (Var "A")] (Var "A")),
+      ("de_morgan_or", Property [Not (BinOp Or (Var "A") (Var "B"))] (BinOp And (Not (Var "A")) (Not (Var "B")))),
+      ("de_morgan_and", Property [Not (BinOp And (Var "A") (Var "B"))] (BinOp Or (Not (Var "A")) (Not (Var "B"))))
+    ]
+
+-- ~~~~~ Substitution ~~~~~
+-- TODO: Print informative errors on inconsistencies
+
+getFormulaVars :: Formula -> [Formula]
+getFormulaVars f = nub $ case f of
+  Var s -> [Var s]
+  Const _ -> []
+  Not f -> getFormulaVars f
+  BinOp _ f1 f2 -> getFormulaVars f1 ++ getFormulaVars f2
+
+getPropertyVars :: Property -> [Formula]
+getPropertyVars p = conclusion p : assumptions p >>= getFormulaVars
+
+joinSubMaps :: SubMap -> SubMap -> Maybe SubMap
+joinSubMaps m1 m2 = do
+  guard $ (m1 `union` m2) == (m1 `union` m2)
+  return $ m1 `union` m2
+
+findSubstitution :: Formula -> Formula -> Maybe SubMap
+findSubstitution f1 f2 = case (f1, f2) of
+  (Var a, _) -> Just $ fromList [(f1, f2)]
+  (Const True, Const True) -> return empty
+  (Const False, Const False) -> return empty
+  (Not f3, Not f4) -> findSubstitution f3 f4
+  (BinOp op1 f3 f4, BinOp op2 f5 f6) -> do
+    map1 <- findSubstitution f3 f5
+    map2 <- findSubstitution f4 f6
+    joinSubMaps map1 map2
+  (_, _) -> Nothing
+
+trySubstitute :: String -> [Formula] -> Formula -> Maybe ()
+trySubstitute propertyName assum concl = do
+  property <- Data.Map.lookup propertyName properties
+  let assumSubs = fmap (uncurry findSubstitution) (zip (assumptions property) assum)
+  guard $ all isJust assumSubs
+  let assumSubsSafe = catMaybes assumSubs
+  conclSub <- findSubstitution (conclusion property) concl
+  foldM_ joinSubMaps conclSub assumSubsSafe
+
+-- ~~~~~ Evaluator ~~~~~

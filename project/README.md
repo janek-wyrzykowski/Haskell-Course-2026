@@ -45,3 +45,11 @@ proof
     exact [name];
 qed
 ```
+
+## Features
+
+### Proof properties
+
+The list of properties available in proof steps is shown below.
+
+> TODO: add properties
