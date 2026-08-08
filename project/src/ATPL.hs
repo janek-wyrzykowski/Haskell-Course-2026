@@ -297,6 +297,14 @@ data Property = Property {assumptions :: [Formula], conclusion :: Formula} deriv
 
 type SubMap = Map Formula Formula
 
+data ProgramState = ProgramState {program :: Program, evaluatedProgram :: Program} deriving (Show, Eq)
+
+type ProgramRun a = StateT ProgramState IO a
+
+initialProgramState :: ProgramState
+initialProgramState = ProgramState {program=Program [], evaluatedProgram=Program []}
+
+
 properties :: Map String Property
 properties =
   fromList
@@ -334,7 +342,7 @@ getPropertyVars p = conclusion p : assumptions p >>= getFormulaVars
 
 joinSubMaps :: SubMap -> SubMap -> Maybe SubMap
 joinSubMaps m1 m2 = do
-  guard $ (m1 `union` m2) == (m1 `union` m2)
+  guard $ (m1 `union` m2) == (m2 `union` m1)
   return $ m1 `union` m2
 
 findSubstitution :: Formula -> Formula -> Maybe SubMap
@@ -349,13 +357,35 @@ findSubstitution f1 f2 = case (f1, f2) of
     joinSubMaps map1 map2
   (_, _) -> Nothing
 
-trySubstitute :: String -> [Formula] -> Formula -> Maybe ()
+trySubstitute :: String -> [Formula] -> Formula -> Maybe SubMap
 trySubstitute propertyName assum concl = do
   property <- Data.Map.lookup propertyName properties
   let assumSubs = fmap (uncurry findSubstitution) (zip (assumptions property) assum)
   guard $ all isJust assumSubs
   let assumSubsSafe = catMaybes assumSubs
   conclSub <- findSubstitution (conclusion property) concl
-  foldM_ joinSubMaps conclSub assumSubsSafe
+  foldM joinSubMaps conclSub assumSubsSafe
 
 -- ~~~~~ Evaluator ~~~~~
+
+evaluateProgram :: ProgramRun ()
+evaluateProgram = do
+  lift $ putStrLn "      _     _________  _______  _____     \n\
+\     / \\   |  _   _  ||_   __ \\|_   _|    \n\
+\    / _ \\  |_/ | | \\_|  | |__) | | |      \n\
+\   / ___ \\     | |      |  ___/  | |   _  \n\
+\ _/ /   \\ \\_  _| |_    _| |_    _| |__/ | \n\
+\|____| |____||_____|  |_____|  |________| \n\
+\Automated    Theorem  Proving  Language\n\
+\by Jan Wyrzykowski\n"
+  fileName <- lift $ putStr "Enter the path to the program file: " >> getLine
+  programRaw <- lift $ readFile fileName
+  let programParsed = parseProgram programRaw
+  case programParsed of
+    Left _ -> return ()
+    Right program -> modify (\s -> s {program = program})
+  
+
+-- ~~~~~ Wrapper ~~~~~
+evaluateProgramWrapper :: IO ()
+evaluateProgramWrapper = evalStateT evaluateProgram initialProgramState
