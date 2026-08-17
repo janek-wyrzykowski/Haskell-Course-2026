@@ -46,6 +46,8 @@ proof
 qed
 ```
 
+> MISSING: alternative branching
+
 ## Features
 
 ### Proof properties

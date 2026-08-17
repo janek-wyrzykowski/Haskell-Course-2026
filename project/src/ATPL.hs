@@ -1,11 +1,13 @@
+{- HLINT ignore "Use void" -}
 module ATPL (parseProgram, pretty) where
 
 import Control.Monad (foldM, foldM_, guard)
 import Control.Monad.State
 import Data.Char
 import Data.List (intercalate, nub)
-import Data.Map (Map, empty, fromList, lookup, union)
+import Data.Map (Map, empty, fromList, insert, lookup, union)
 import Data.Maybe (catMaybes, isJust)
+import Control.Monad.Trans.Maybe (MaybeT, hoistMaybe)
 
 -- ~~~~~~~~~~~~~~~
 -- ~~~~~ AST ~~~~~
@@ -297,16 +299,17 @@ data Property = Property {assumptions :: [Formula], conclusion :: Formula} deriv
 
 type SubMap = Map Formula Formula
 
-data ProgramState = ProgramState {program :: Program, evaluatedProgram :: Program} deriving (Show, Eq)
+data ProgramState = ProgramState {program :: Program, provedProperties :: Map String Property} deriving (Show, Eq)
 
 type ProgramRun a = StateT ProgramState IO a
 
+type MaybeProgramRun a = MaybeT (StateT ProgramState IO) a
+
 initialProgramState :: ProgramState
-initialProgramState = ProgramState {program=Program [], evaluatedProgram=Program []}
+initialProgramState = ProgramState {program = Program [], provedProperties = baseProperties}
 
-
-properties :: Map String Property
-properties =
+baseProperties :: Map String Property
+baseProperties =
   fromList
     [ ("double_negation", Property [Not (Not (Var "A"))] (Var "A")),
       ("or_intro_left", Property [Var "A"] (BinOp Or (Var "A") (Var "B"))),
@@ -345,6 +348,9 @@ joinSubMaps m1 m2 = do
   guard $ (m1 `union` m2) == (m2 `union` m1)
   return $ m1 `union` m2
 
+joinSubMapsT :: SubMap -> SubMap -> MaybeProgramRun SubMap
+joinSubMapsT m1 m2 = hoistMaybe (joinSubMaps m1 m2)
+
 findSubstitution :: Formula -> Formula -> Maybe SubMap
 findSubstitution f1 f2 = case (f1, f2) of
   (Var a, _) -> Just $ fromList [(f1, f2)]
@@ -357,34 +363,74 @@ findSubstitution f1 f2 = case (f1, f2) of
     joinSubMaps map1 map2
   (_, _) -> Nothing
 
-trySubstitute :: String -> [Formula] -> Formula -> Maybe SubMap
+trySubstitute :: String -> [Formula] -> Formula -> MaybeProgramRun ()
 trySubstitute propertyName assum concl = do
-  property <- Data.Map.lookup propertyName properties
+  props <- lift $ gets provedProperties
+  property <- hoistMaybe (Data.Map.lookup propertyName props)
   let assumSubs = fmap (uncurry findSubstitution) (zip (assumptions property) assum)
   guard $ all isJust assumSubs
   let assumSubsSafe = catMaybes assumSubs
-  conclSub <- findSubstitution (conclusion property) concl
-  foldM joinSubMaps conclSub assumSubsSafe
+  conclSub <- hoistMaybe $ findSubstitution (conclusion property) concl
+  foldM_ joinSubMapsT conclSub assumSubsSafe
 
 -- ~~~~~ Evaluator ~~~~~
 
+extractProperty :: Formula -> Property
+extractProperty formula = case formula of
+  BinOp Implies a b -> Property (decomposeAnd a) b
+  _ -> Property [] formula
+  where
+    decomposeAnd :: Formula -> [Formula]
+    decomposeAnd f = case f of
+      BinOp And x y -> decomposeAnd x ++ decomposeAnd y
+      _ -> [f]
+
+verifyProof :: Property -> Proof -> ProgramRun Bool
+verifyProof prop proof = do
+  -- TODO: verify each step of the proof
+  return True
+
+evaluateStatement :: String -> Statement -> ProgramRun Bool
+evaluateStatement name statement = do
+  provedProps <- gets provedProperties
+  -- when (isJust Data.Map.lookup name provedProps) -- TODO: add a warning about overwriting
+  case statement of
+    Axiom formula -> do
+      let extractedProperty = extractProperty formula
+      modify $ \s -> s {provedProperties = insert name extractedProperty provedProps}
+      return True
+    Theorem formula proof -> do
+      let extractedProperty = extractProperty formula
+      isProofCorrect <- verifyProof extractedProperty proof
+      if isProofCorrect
+        then do
+          modify $ \s -> s {provedProperties = insert name extractedProperty provedProps}
+          return True
+        else do
+          -- TODO: add an error
+          return False
+
 evaluateProgram :: ProgramRun ()
 evaluateProgram = do
-  lift $ putStrLn "      _     _________  _______  _____     \n\
-\     / \\   |  _   _  ||_   __ \\|_   _|    \n\
-\    / _ \\  |_/ | | \\_|  | |__) | | |      \n\
-\   / ___ \\     | |      |  ___/  | |   _  \n\
-\ _/ /   \\ \\_  _| |_    _| |_    _| |__/ | \n\
-\|____| |____||_____|  |_____|  |________| \n\
-\Automated    Theorem  Proving  Language\n\
-\by Jan Wyrzykowski\n"
+  put initialProgramState
+  lift $
+    putStrLn
+      "      _     _________  _______  _____     \n\
+      \     / \\   |  _   _  ||_   __ \\|_   _|    \n\
+      \    / _ \\  |_/ | | \\_|  | |__) | | |      \n\
+      \   / ___ \\     | |      |  ___/  | |   _  \n\
+      \ _/ /   \\ \\_  _| |_    _| |_    _| |__/ | \n\
+      \|____| |____||_____|  |_____|  |________| \n\
+      \Automated    Theorem  Proving  Language\n\
+      \by Jan Wyrzykowski\n"
   fileName <- lift $ putStr "Enter the path to the program file: " >> getLine
   programRaw <- lift $ readFile fileName
   let programParsed = parseProgram programRaw
   case programParsed of
     Left _ -> return ()
     Right program -> modify (\s -> s {program = program})
-  
+  Program statements <- gets program
+  mapM_ (uncurry evaluateStatement) statements
 
 -- ~~~~~ Wrapper ~~~~~
 evaluateProgramWrapper :: IO ()
