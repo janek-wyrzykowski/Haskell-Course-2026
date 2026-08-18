@@ -1,13 +1,13 @@
 {- HLINT ignore "Use void" -}
 module ATPL (parseProgram, pretty) where
 
-import Control.Monad (foldM, foldM_, guard)
+import Control.Monad (foldM, foldM_, guard, unless)
 import Control.Monad.State
+import Control.Monad.Trans.Maybe (MaybeT, hoistMaybe)
 import Data.Char
 import Data.List (intercalate, nub)
 import Data.Map (Map, empty, fromList, insert, lookup, union)
 import Data.Maybe (catMaybes, isJust)
-import Control.Monad.Trans.Maybe (MaybeT, hoistMaybe)
 
 -- ~~~~~~~~~~~~~~~
 -- ~~~~~ AST ~~~~~
@@ -303,6 +303,8 @@ data ProgramState = ProgramState {program :: Program, provedProperties :: Map St
 
 type ProgramRun a = StateT ProgramState IO a
 
+-- IMPORTANT
+-- is this type necessary? I want to record errors, not fail early
 type MaybeProgramRun a = MaybeT (StateT ProgramState IO) a
 
 initialProgramState :: ProgramState
@@ -331,7 +333,6 @@ baseProperties =
     ]
 
 -- ~~~~~ Substitution ~~~~~
--- TODO: Print informative errors on inconsistencies
 
 getFormulaVars :: Formula -> [Formula]
 getFormulaVars f = nub $ case f of
@@ -343,35 +344,34 @@ getFormulaVars f = nub $ case f of
 getPropertyVars :: Property -> [Formula]
 getPropertyVars p = conclusion p : assumptions p >>= getFormulaVars
 
-joinSubMaps :: SubMap -> SubMap -> Maybe SubMap
+joinSubMaps :: SubMap -> SubMap -> MaybeProgramRun SubMap
 joinSubMaps m1 m2 = do
-  guard $ (m1 `union` m2) == (m2 `union` m1)
-  return $ m1 `union` m2
+  if (m1 `union` m2) == (m2 `union` m1)
+    then return $ m1 `union` m2
+    else hoistMaybe Nothing -- TODO: add an error
 
-joinSubMapsT :: SubMap -> SubMap -> MaybeProgramRun SubMap
-joinSubMapsT m1 m2 = hoistMaybe (joinSubMaps m1 m2)
-
-findSubstitution :: Formula -> Formula -> Maybe SubMap
+findSubstitution :: Formula -> Formula -> MaybeProgramRun SubMap
 findSubstitution f1 f2 = case (f1, f2) of
-  (Var a, _) -> Just $ fromList [(f1, f2)]
+  (Var a, _) -> return $ fromList [(f1, f2)]
   (Const True, Const True) -> return empty
   (Const False, Const False) -> return empty
   (Not f3, Not f4) -> findSubstitution f3 f4
   (BinOp op1 f3 f4, BinOp op2 f5 f6) -> do
-    map1 <- findSubstitution f3 f5
-    map2 <- findSubstitution f4 f6
-    joinSubMaps map1 map2
-  (_, _) -> Nothing
+    if op1 == op2
+      then do
+        map1 <- findSubstitution f3 f5
+        map2 <- findSubstitution f4 f6
+        joinSubMaps map1 map2
+      else hoistMaybe Nothing -- TODO: add an error
+  (_, _) -> hoistMaybe Nothing
 
 trySubstitute :: String -> [Formula] -> Formula -> MaybeProgramRun ()
 trySubstitute propertyName assum concl = do
   props <- lift $ gets provedProperties
   property <- hoistMaybe (Data.Map.lookup propertyName props)
-  let assumSubs = fmap (uncurry findSubstitution) (zip (assumptions property) assum)
-  guard $ all isJust assumSubs
-  let assumSubsSafe = catMaybes assumSubs
-  conclSub <- hoistMaybe $ findSubstitution (conclusion property) concl
-  foldM_ joinSubMapsT conclSub assumSubsSafe
+  assumSubsSafe <- traverse (uncurry findSubstitution) (zip (assumptions property) assum)
+  conclSub <- findSubstitution (conclusion property) concl
+  foldM_ joinSubMaps conclSub assumSubsSafe
 
 -- ~~~~~ Evaluator ~~~~~
 
@@ -385,12 +385,21 @@ extractProperty formula = case formula of
       BinOp And x y -> decomposeAnd x ++ decomposeAnd y
       _ -> [f]
 
-verifyProof :: Property -> Proof -> ProgramRun Bool
+verifyProof :: Property -> Proof -> MaybeProgramRun Bool
 verifyProof prop proof = do
-  -- TODO: verify each step of the proof
+  let allProofSteps = proofSteps proof
+  foldM_ verifyProofStep True allProofSteps
+  -- TODO finish
   return True
+  where
+    verifyProofStep :: Bool -> (String, ProofStep) -> MaybeProgramRun Bool
+    verifyProofStep seed (name, step) = do
+      guard seed
+      -- TODO finish
+      return True
 
-evaluateStatement :: String -> Statement -> ProgramRun Bool
+
+evaluateStatement :: String -> Statement -> MaybeProgramRun Bool
 evaluateStatement name statement = do
   provedProps <- gets provedProperties
   -- when (isJust Data.Map.lookup name provedProps) -- TODO: add a warning about overwriting
@@ -410,12 +419,10 @@ evaluateStatement name statement = do
           -- TODO: add an error
           return False
 
-evaluateProgram :: ProgramRun ()
+evaluateProgram :: MaybeProgramRun ()
 evaluateProgram = do
   put initialProgramState
-  lift $
-    putStrLn
-      "      _     _________  _______  _____     \n\
+  lift $ lift $ putStrLn "      _     _________  _______  _____     \n\
       \     / \\   |  _   _  ||_   __ \\|_   _|    \n\
       \    / _ \\  |_/ | | \\_|  | |__) | | |      \n\
       \   / ___ \\     | |      |  ___/  | |   _  \n\
@@ -423,8 +430,8 @@ evaluateProgram = do
       \|____| |____||_____|  |_____|  |________| \n\
       \Automated    Theorem  Proving  Language\n\
       \by Jan Wyrzykowski\n"
-  fileName <- lift $ putStr "Enter the path to the program file: " >> getLine
-  programRaw <- lift $ readFile fileName
+  fileName <- lift $ lift $ putStr "Enter the path to the program file: " >> getLine
+  programRaw <- lift $ lift $ readFile fileName
   let programParsed = parseProgram programRaw
   case programParsed of
     Left _ -> return ()
